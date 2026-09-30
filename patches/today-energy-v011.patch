@@ -1,0 +1,222 @@
+diff --git a/src/Energy.tsx b/src/Energy.tsx
+index 7beb0a2..09e5d87 100644
+--- a/src/Energy.tsx
++++ b/src/Energy.tsx
+@@ -12,12 +12,12 @@ const today=(timezone:string)=>{
+   return `${part('year')}-${part('month')}-${part('day')}`
+ }
+ 
+-export default function Energy({household}:{household:Household}){
++export default function Energy({household,initialView='overview'}:{household:Household;initialView?:'overview'|'add'}){
+   const [readings,setReadings]=useState<EnergyReading[]>([])
+   const [loading,setLoading]=useState(true)
+   const [available,setAvailable]=useState(false)
+   const [error,setError]=useState<string|null>(null)
+-  const [view,setView]=useState<'overview'|'add'|'history'>('overview')
++  const [view,setView]=useState<'overview'|'add'|'history'>(initialView)
+   const [busy,setBusy]=useState(false)
+   async function refresh(){
+     setLoading(true)
+diff --git a/src/HomeGate.test.tsx b/src/HomeGate.test.tsx
+index 8aa3434..c63dc67 100644
+--- a/src/HomeGate.test.tsx
++++ b/src/HomeGate.test.tsx
+@@ -41,6 +41,14 @@ it('domácnost otevře Dnes a Energie bez dalších modulů',async()=>{
+   expect(await screen.findByRole('button',{name:'Přidat odečet'})).toBeInTheDocument()
+ })
+ 
++it('akce z prázdného Dnes otevře existující formulář odečtu',async()=>{
++  loadHousehold.mockResolvedValue({data:{household:{id:'h',name:'Domov',timezone:'Europe/Prague'},members:[],invitations:[]},error:null})
++  render(<MemoryRouter initialEntries={['/dnes']}><HomeGate user={user}/></MemoryRouter>)
++  await userEvent.click(await screen.findByRole('button',{name:'Přidat odečet'}))
++  expect(await screen.findByRole('heading',{name:'Přidat odečet'})).toBeInTheDocument()
++  expect(screen.getByLabelText('VT stav (kWh)')).toBeInTheDocument()
++})
++
+ it('starý odkaz do odstraněné části zobrazí Dnes bez dalšího síťového požadavku',async()=>{
+   loadHousehold.mockResolvedValue({data:{household:{id:'h',name:'Domov',timezone:'Europe/Prague'},members:[],invitations:[]},error:null})
+   const fetchSpy=vi.spyOn(globalThis,'fetch')
+diff --git a/src/MainApp.tsx b/src/MainApp.tsx
+index a79fd10..2dd0558 100644
+--- a/src/MainApp.tsx
++++ b/src/MainApp.tsx
+@@ -3,6 +3,7 @@ import {CalendarDays,Home,House,Lightbulb,UserRound} from 'lucide-react'
+ import {useLocation,useNavigate} from 'react-router-dom'
+ import type {Household} from './lib/households'
+ import Energy from './Energy'
++import Today from './Today'
+ import './main-app.css'
+ 
+ export default function MainApp({household}:{household:Household}){
+@@ -17,7 +18,7 @@ export default function MainApp({household}:{household:Household}){
+         <button aria-label="Otevřít profil" onClick={()=>navigate('/profil')}><UserRound/></button>
+       </div>
+     </header>
+-    {energy?<Energy household={household}/>:<section className="app-content placeholder"><h1>Dnes</h1><p>Tato část bude dostupná v další verzi.</p></section>}
++    {energy?<Energy household={household} initialView={location.state?.energyAdd?'add':'overview'}/>:<Today household={household}/>}
+     <BottomNav active={energy?'energy':'today'}/>
+   </main>
+ }
+diff --git a/src/Today.test.tsx b/src/Today.test.tsx
+new file mode 100644
+index 0000000..59c16d9
+--- /dev/null
++++ b/src/Today.test.tsx
+@@ -0,0 +1,86 @@
++import {afterEach,beforeEach,expect,it,vi} from 'vitest'
++import {cleanup,render,screen,waitFor} from '@testing-library/react'
++import userEvent from '@testing-library/user-event'
++import {MemoryRouter,useLocation} from 'react-router-dom'
++import Today from './Today'
++import type {EnergyReading} from './lib/energy'
++
++const {loadEnergyReadings}=vi.hoisted(()=>({loadEnergyReadings:vi.fn()}))
++vi.mock('./lib/energy',async original=>({...await original<typeof import('./lib/energy')>(),loadEnergyReadings}))
++const household={id:'household-a',name:'Domov',timezone:'Europe/Prague'}
++const record=(reading_date:string,vt_kwh:number,nt_kwh:number):EnergyReading=>({id:reading_date,household_id:household.id,reading_date,vt_kwh,nt_kwh,price_vt_kwh:5,price_nt_kwh:3,created_at:'',created_by:'user-a'})
++function Path(){return <span data-testid="path">{useLocation().pathname}</span>}
++const mount=()=>render(<MemoryRouter initialEntries={['/dnes']}><Today household={household}/><Path/></MemoryRouter>)
++beforeEach(()=>{vi.clearAllMocks();loadEnergyReadings.mockResolvedValue({data:[],error:null})})
++afterEach(cleanup)
++
++it('bez odečtu nabízí otevřít existující formulář Energie',async()=>{
++  mount()
++  expect(await screen.findByText('Zatím nemáš žádný odečet.')).toBeInTheDocument()
++  await userEvent.click(screen.getByRole('button',{name:'Přidat odečet'}))
++  expect(screen.getByTestId('path')).toHaveTextContent('/energie')
++})
++
++it('první odečet zobrazuje datum a oba kumulativní stavy bez falešné ceny a spotřeby',async()=>{
++  loadEnergyReadings.mockResolvedValue({data:[record('2026-09-22',100,50)],error:null})
++  mount()
++  expect(await screen.findByText(/Poslední odečet: 22\. 9\. 2026/)).toBeInTheDocument()
++  expect(screen.getByText(/VT stav: 100 kWh/)).toBeInTheDocument()
++  expect(screen.getByText(/NT stav: 50 kWh/)).toBeInTheDocument()
++  expect(screen.getByText('Spotřeba se zobrazí po dalším odečtu.')).toBeInTheDocument()
++  expect(screen.queryByText(/cca/)).not.toBeInTheDocument()
++})
++
++it('dokončený interval počítá VT, NT, součet, orientační cenu a délku přes existující helper',async()=>{
++  loadEnergyReadings.mockResolvedValue({data:[record('2026-09-29',120,60),record('2026-09-22',100,50)],error:null})
++  mount()
++  expect(await screen.findByText(/Poslední odečet: 29\. 9\. 2026/)).toBeInTheDocument()
++  expect(screen.getByText('30 kWh')).toBeInTheDocument()
++  expect(screen.getByText(/cca 130,00 Kč/)).toBeInTheDocument()
++  expect(screen.getByText('za 7 dní')).toBeInTheDocument()
++  expect(screen.queryByText(/minule/)).not.toBeInTheDocument()
++})
++
++it('více intervalů porovnává s předchozím dokončeným intervalem',async()=>{
++  loadEnergyReadings.mockResolvedValue({data:[record('2026-09-29',130,60),record('2026-09-22',100,50),record('2026-09-15',80,40)],error:null})
++  mount()
++  expect(await screen.findByText('40 kWh')).toBeInTheDocument()
++  expect(screen.getByText(/o 10 kWh více než minule \(33,3 %\)/)).toBeInTheDocument()
++})
++
++it('nulovou předchozí spotřebu neporovnává zavádějícím procentem',async()=>{
++  loadEnergyReadings.mockResolvedValue({data:[record('2026-09-29',110,50),record('2026-09-22',100,50),record('2026-09-15',100,50)],error:null})
++  mount()
++  expect(await screen.findByText('10 kWh')).toBeInTheDocument()
++  expect(screen.getByText('o 10 kWh více než minule')).toBeInTheDocument()
++  expect(screen.queryByText(/%/)).not.toBeInTheDocument()
++})
++
++it('detail vede na /energie',async()=>{
++  loadEnergyReadings.mockResolvedValue({data:[record('2026-09-22',100,50)],error:null})
++  mount()
++  await userEvent.click(await screen.findByRole('button',{name:'Zobrazit detail'}))
++  expect(screen.getByTestId('path')).toHaveTextContent('/energie')
++})
++
++it('čte pouze aktuální household přes stávající Energy query',async()=>{
++  mount()
++  await waitFor(()=>expect(loadEnergyReadings).toHaveBeenCalledWith('household-a'))
++  expect(loadEnergyReadings).toHaveBeenCalledTimes(1)
++})
++
++it('chybu čtení nerozpozná jako prázdný stav a umožní opakovat',async()=>{
++  loadEnergyReadings.mockResolvedValueOnce({data:null,error:'Síťová chyba'}).mockResolvedValueOnce({data:[],error:null})
++  mount()
++  expect(await screen.findByText('Údaje o energii se nepodařilo načíst.')).toBeInTheDocument()
++  expect(screen.queryByRole('button',{name:'Přidat odečet'})).not.toBeInTheDocument()
++  await userEvent.click(screen.getByRole('button',{name:'Zkusit znovu'}))
++  expect(await screen.findByText('Zatím nemáš žádný odečet.')).toBeInTheDocument()
++})
++
++it('Dnes neobsahuje odkazy ani ovládání Nákupu',async()=>{
++  mount()
++  expect(await screen.findByText('Zatím nemáš žádný odečet.')).toBeInTheDocument()
++  expect(screen.queryByText(/Nákup/i)).not.toBeInTheDocument()
++  expect(screen.queryByRole('link',{name:/Nákup/i})).not.toBeInTheDocument()
++})
+diff --git a/src/Today.tsx b/src/Today.tsx
+new file mode 100644
+index 0000000..c76beea
+--- /dev/null
++++ b/src/Today.tsx
+@@ -0,0 +1,51 @@
++import {useEffect,useState} from 'react'
++import {useNavigate} from 'react-router-dom'
++import type {Household} from './lib/households'
++import {comparison,energyIntervals,loadEnergyReadings,type EnergyReading} from './lib/energy'
++import './today.css'
++
++const number=(value:number,digits=1)=>new Intl.NumberFormat('cs-CZ',{maximumFractionDigits:digits}).format(value)
++const money=(value:number)=>new Intl.NumberFormat('cs-CZ',{style:'currency',currency:'CZK'}).format(value)
++const date=(value:string)=>new Date(`${value}T12:00:00Z`).toLocaleDateString('cs-CZ',{timeZone:'UTC'})
++
++export default function Today({household}:{household:Household}){
++  const navigate=useNavigate()
++  const [readings,setReadings]=useState<EnergyReading[]|null>(null)
++  const [error,setError]=useState(false)
++  const [retry,setRetry]=useState(0)
++  useEffect(()=>{
++    let current=true
++    setReadings(null);setError(false)
++    void loadEnergyReadings(household.id).then(result=>{
++      if(!current)return
++      if(result.error){setError(true);return}
++      setReadings(result.data||[])
++    }).catch(()=>{if(current)setError(true)})
++    return ()=>{current=false}
++  },[household.id,retry])
++  const latest=readings?.[0]
++  const interval=readings?energyIntervals(readings)[0]?.interval:null
++  const compared=readings?comparison(readings):null
++  return <section className="app-content today-page">
++    <h1>Dnes</h1>
++    <div className="today-energy" aria-label="Přehled energie">
++      <h2>Energie</h2>
++      {error?<><p>Údaje o energii se nepodařilo načíst.</p><button className="today-action" onClick={()=>setRetry(value=>value+1)}>Zkusit znovu</button></>:
++        readings===null?<p>Načítám údaje o energii…</p>:
++        !latest?<><p>Zatím nemáš žádný odečet.</p><button className="today-action" onClick={()=>navigate('/energie',{state:{energyAdd:true}})}>Přidat odečet</button></>:
++        <>
++          <p>Poslední odečet: {date(latest.reading_date)}</p>
++          {interval?<>
++            <strong className="today-total">{number(interval.total,3)} kWh</strong>
++            <p className="today-price">cca {money(interval.cost)}</p>
++            <p>za {interval.days} dní</p>
++            {compared&&<p>{compared.change===0?'Stejná spotřeba jako minule':`${compared.change<0?`o ${number(-compared.change,3)} kWh méně`:`o ${number(compared.change,3)} kWh více`} než minule`}{compared.percent!==null?` (${number(compared.percent,1)} %)`:''}</p>}
++          </>:<>
++            <p>VT stav: {number(latest.vt_kwh,3)} kWh<br/>NT stav: {number(latest.nt_kwh,3)} kWh</p>
++            <p>Spotřeba se zobrazí po dalším odečtu.</p>
++          </>}
++          <button className="today-action" onClick={()=>navigate('/energie')}>Zobrazit detail</button>
++        </>}
++    </div>
++  </section>
++}
+diff --git a/src/today.css b/src/today.css
+new file mode 100644
+index 0000000..a4aabe8
+--- /dev/null
++++ b/src/today.css
+@@ -0,0 +1,8 @@
++.today-page{color:#18312b}
++.today-page h1{font-size:2rem;margin:12px 0 22px}
++.today-energy{background:#fff;border:1px solid #dce7e2;border-radius:20px;padding:20px;max-width:100%;overflow-wrap:anywhere}
++.today-energy h2{font-size:1.25rem;margin:0 0 16px}
++.today-energy p{color:#4b605a;line-height:1.5;margin:10px 0}
++.today-total{font-size:2rem;line-height:1.2;display:block;margin-top:16px}
++.today-energy .today-price{font-size:1.15rem;font-weight:700;color:#18312b}
++.today-action{min-height:54px;width:100%;border:0;border-radius:15px;background:#116254;color:#fff;font:inherit;font-weight:700;padding:12px 18px;margin-top:16px;cursor:pointer}

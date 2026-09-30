@@ -1,4 +1,4 @@
-name: Energy preview
+name: Today Energy Summary preview
 
 on:
   push:
@@ -21,18 +21,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: Nexeruno/domov-plus-dev
-          ref: energy-foundation-v01
+          path: preview
           persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Nexeruno/domov-plus-dev
+          ref: 76a58335a44592d224a9ca988fcb467365a69c60
+          path: app
+          persist-credentials: false
+      - name: Verify exact Today V0.1.1 source
+        working-directory: app
+        shell: bash
+        run: |
+          echo "f80963023df9991f244c09728c996ce61d1eb1a4428234e373014b22d3e392d7  ../preview/patches/today-energy-v011.patch" | sha256sum -c -
+          git apply --index ../preview/patches/today-energy-v011.patch
+          test "$(git write-tree)" = "90b97e39a01f2c051d61b8448d0cc7dbd8e0a832"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: app/package-lock.json
       - run: npm ci
+        working-directory: app
       - run: npm test
+        working-directory: app
       - run: npm run typecheck
+        working-directory: app
       - run: npm audit --omit=dev
-      - run: npm run build
+        working-directory: app
+      - run: test -n "$VITE_SUPABASE_PUBLISHABLE_KEY" && npm run build
+        working-directory: app
         env:
           VITE_APP_BASE: /domov-plus-energy-preview/
           VITE_SUPABASE_URL: https://ganyhcjzwgmiarkhcuej.supabase.co
@@ -40,5 +58,5 @@ jobs:
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: app/dist
       - uses: actions/deploy-pages@v4
